@@ -4,10 +4,16 @@ on:
   pull_request:
     paths:
       - "intern-task-terraform/**"
+      - "intern-task-app/Dockerfile"
+      - "intern-task-app/app/**"
+      - ".github/workflows/intern-task-terraform-ci.yml"
   push:
     branches: [main]
     paths:
       - "intern-task-terraform/**"
+      - "intern-task-app/Dockerfile"
+      - "intern-task-app/app/**"
+      - ".github/workflows/intern-task-terraform-ci.yml"
   workflow_dispatch:
 
 jobs:
@@ -20,6 +26,11 @@ jobs:
       AWS_ACCESS_KEY_ID: fake
       AWS_SECRET_ACCESS_KEY: fake
       AWS_DEFAULT_REGION: us-east-1
+       # Reserved documentation-only address for a non-interactive CI plan.
+      TF_VAR_ssh_cidr: "203.0.113.10/32"
+    defaults:
+      run:
+        working-directory: intern-task-terraform/terraform
     steps:
       - uses: actions/checkout@v4
 
@@ -30,8 +41,11 @@ jobs:
       - name: Format check
         run: terraform fmt -check -recursive
 
+      - name: Initialize providers
+        run: terraform init -input=false
+
       - name: Validate
         run: terraform validate
 
       - name: Plan
-        run: terraform plan
+        run: terraform plan -input=false

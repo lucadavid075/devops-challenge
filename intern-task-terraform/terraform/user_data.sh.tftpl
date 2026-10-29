@@ -1,0 +1,59 @@
+#!/usr/bin/env bash
+set -Eeuo pipefail
+
+APP_DIR="/opt/intern-task-app"
+
+# This is the same Docker build context used by the local Kubernetes task.
+install -d -m 0755 "$APP_DIR/app"
+printf '%s' '${dockerfile_b64}' | base64 --decode > "$APP_DIR/Dockerfile"
+printf '%s' '${app_py_b64}' | base64 --decode > "$APP_DIR/app/app.py"
+chmod 0644 "$APP_DIR/Dockerfile" "$APP_DIR/app/app.py"
+
+export DEBIAN_FRONTEND=noninteractive
+apt-get update
+apt-get install -y docker.io sudo ufw
+systemctl enable --now docker.service
+
+# A separate, non-root administrator account with passwordless sudo.
+if ! id -u intern-task >/dev/null 2>&1; then
+  useradd --create-home --shell /bin/bash intern-task
+fi
+usermod --append --groups docker intern-task
+printf '%s\n' 'intern-task ALL=(ALL) NOPASSWD:ALL' > /etc/sudoers.d/intern-task
+chmod 0440 /etc/sudoers.d/intern-task
+visudo -c -f /etc/sudoers.d/intern-task
+
+# Keep host ingress narrow. Host networking below makes these UFW INPUT
+# rules apply directly; Docker's published-port NAT can otherwise bypass UFW.
+ufw --force reset
+ufw default deny incoming
+ufw default allow outgoing
+ufw allow from ${ssh_cidr} to any port 22 proto tcp comment 'SSH from configured CIDR'
+ufw allow ${app_port}/tcp comment 'intern-task-app HTTP'
+ufw --force enable
+
+# Build the real app image from the Dockerfile in the shared task context.
+docker build --tag intern-task-app:local "$APP_DIR"
+
+cat > /etc/systemd/system/intern-task-app.service <<'UNIT'
+[Unit]
+Description=Intern task application container
+Wants=network-online.target
+After=network-online.target docker.service
+Requires=docker.service
+
+[Service]
+Type=simple
+Restart=always
+RestartSec=5
+ExecStartPre=-/usr/bin/docker rm --force intern-task-app
+ExecStart=/usr/bin/docker run --rm --name intern-task-app --network host --env PORT=${app_port} intern-task-app:local
+ExecStop=/usr/bin/docker stop --time 10 intern-task-app
+TimeoutStopSec=20
+
+[Install]
+WantedBy=multi-user.target
+UNIT
+
+systemctl daemon-reload
+systemctl enable --now intern-task-app.service
